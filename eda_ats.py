@@ -139,12 +139,35 @@ def summarize_cover_by_elo_edge_bins(dfx: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def add_favorite_aligned_edge(dfx: pd.DataFrame) -> pd.DataFrame:
+    dfx = dfx.copy()
+    # elo_edge is home-perspective; flip sign when favorite is away
+    mult = dfx["favorite"].map({"home": 1, "away": -1})
+    dfx["fav_edge"] = dfx["elo_edge"] * mult
+    return dfx
+
+
+def summarize_cover_by_fav_edge_bins(
+    dfx: pd.DataFrame, min_n: int = 20
+) -> pd.DataFrame:
+    dfx = dfx.copy()
+    bins = [-30, -15, -7, -3, -1, 0, 1, 3, 7, 15, 30]
+    dfx["fav_edge_bin"] = pd.cut(
+        dfx["fav_edge"], bins=bins, right=False, include_lowest=True
+    )
+    g = dfx.groupby("fav_edge_bin", observed=True)["favorite_covered"]
+    out = g.agg(n="size", covers="sum").reset_index()
+    out["cover_rate"] = out["covers"] / out["n"]
+    return out[out["n"] >= min_n]
+
+
 if __name__ == "__main__":
     df = load_data(CSV_PATH)
     dfx = build_ats_target(df)
     dfx = add_basic_features(dfx)
     dfx = add_elo_features(dfx)
     dfx = add_elo_edge(dfx)
+    dfx = add_favorite_aligned_edge(dfx)
 
     print("\nCover rate by favorite_is_home:")
     print(summarize_cover_by(dfx, "favorite_is_home").to_string(index=False))
@@ -175,6 +198,9 @@ if __name__ == "__main__":
 
     print("\nCover rate by ELO minus market edge (home perspective):")
     print(summarize_cover_by_elo_edge_bins(dfx).to_string(index=False))
+
+    print("\nCover rate by favorite-aligned ELO edge:")
+    print(summarize_cover_by_fav_edge_bins(dfx, min_n=20).to_string(index=False))
 
     # Optional quick sanity print
     # print(f"Rows after filtering: {len(dfx)}")
