@@ -1,3 +1,5 @@
 pandas
 cfbd
 python-dotenv
+numpy
+matplotlib

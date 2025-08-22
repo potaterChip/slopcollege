@@ -182,9 +182,17 @@ if __name__ == "__main__":
         with get_cfbd_client() as client:
             if games_df is None:
                 games_df = fetch_games_2024(client)
+                # Keep only FBS vs FBS games and overwrite the CSVs
+                fbs_mask = (games_df["homeClassification"].str.lower() == "fbs") & (
+                    games_df["awayClassification"].str.lower() == "fbs"
+                )
+                games_df = games_df.loc[fbs_mask].copy()
                 games_df.to_csv(games_path, index=False)
             if lines_df is None:
                 lines_df = fetch_lines_2024(client)
+                # Filter lines to only the remaining game ids and overwrite
+                valid_ids = set(games_df["id"])
+                lines_df = lines_df[lines_df["id"].isin(valid_ids)].copy()
                 lines_df.to_csv(lines_path, index=False)
 
     # Flatten closing lines and merge
