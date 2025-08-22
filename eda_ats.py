@@ -3,8 +3,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, brier_score_loss
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.inspection import permutation_importance
 
 CSV_PATH = "data/cfbd_games_2024_with_closing.csv"
 
@@ -288,6 +290,315 @@ def fit_logistic_regression(dfx: pd.DataFrame):
     print(coef_table.to_string(index=False))
 
 
+def fit_logistic_regression_nonlinear(dfx: pd.DataFrame):
+    # Add nonlinearity via binning + one-hot of abs_spread and favorite-aligned edge
+    if "week" not in dfx.columns:
+        print("\n[LogReg+Bins] week not in data; skipping model.")
+        return
+    d = dfx.copy()
+    d["favorite_is_home"] = d["favorite_is_home"].astype(int)
+    for col in ["neutralSite", "conferenceGame"]:
+        if col in d.columns:
+            d[col] = d[col].astype("Int64").fillna(0).astype(int)
+        else:
+            d[col] = 0
+
+    # Create buckets for nonlinearity
+    spread_bins = [0, 3, 7, 14, 30]
+    d["abs_spread_bucket"] = pd.cut(
+        d["abs_spread"],
+        bins=spread_bins,
+        right=False,
+        include_lowest=True,
+        labels=["[0,3)", "[3,7)", "[7,14)", "[14,30)"],
+    )
+    edge_bins = [-30, -12, -6, -3, -1, 0, 1, 3, 6, 12, 30]
+    d["fav_edge_bin"] = pd.cut(
+        d["fav_edge"], bins=edge_bins, right=False, include_lowest=True
+    )
+
+    # Combined interaction categorical: abs_spread_bucket × fav_edge_bin
+    d["spread_edge_combo"] = (
+        d["abs_spread_bucket"].astype(str) + "×" + d["fav_edge_bin"].astype(str)
+    )
+
+    # Model features
+    numeric_features = [
+        "elo_diff",
+        "fav_edge",
+        "abs_spread",
+        "week",
+        "favorite_is_home",
+        "neutralSite",
+        "conferenceGame",
+    ]
+    categorical_features = [
+        "abs_spread_bucket",
+        "fav_edge_bin",
+        "spread_edge_combo",
+    ]
+
+    d_model = d.dropna(
+        subset=numeric_features + categorical_features + ["favorite_covered"]
+    ).copy()
+    X_num = d_model[numeric_features]
+    X_cat = d_model[categorical_features]
+    y = d_model["favorite_covered"].astype(int)
+
+    # Chronological split
+    train = d_model["week"] <= 10
+    test = d_model["week"] >= 11
+    if train.sum() == 0 or test.sum() == 0:
+        print("\n[LogReg+Bins] Not enough data for chronological split; skipping.")
+        return
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", StandardScaler(with_mean=False), numeric_features),
+            (
+                "cat",
+                OneHotEncoder(handle_unknown="ignore", sparse_output=True),
+                categorical_features,
+            ),
+        ]
+    )
+
+    pipe = Pipeline(
+        [
+            ("prep", preprocessor),
+            ("logreg", LogisticRegression(max_iter=1000, solver="liblinear")),
+        ]
+    )
+
+    pipe.fit(d_model.loc[train, numeric_features + categorical_features], y[train])
+
+    proba_train = pipe.predict_proba(
+        d_model.loc[train, numeric_features + categorical_features]
+    )[:, 1]
+    proba_test = pipe.predict_proba(
+        d_model.loc[test, numeric_features + categorical_features]
+    )[:, 1]
+    auc_train = roc_auc_score(y[train], proba_train)
+    auc_test = roc_auc_score(y[test], proba_test)
+    brier_train = brier_score_loss(y[train], proba_train)
+    brier_test = brier_score_loss(y[test], proba_test)
+
+    print("\n[LogReg+Bins] Numeric:", numeric_features)
+    print("[LogReg+Bins] Categorical (one-hot):", categorical_features)
+    print(f"[LogReg+Bins] Train AUC: {auc_train:.3f} | Test AUC: {auc_test:.3f}")
+    print(
+        f"[LogReg+Bins] Train Brier: {brier_train:.3f} | Test Brier: {brier_test:.3f}"
+    )
+
+
+def fit_logistic_regression_nonlinear_tuned(dfx: pd.DataFrame):
+    # Grid over stronger regularization to reduce overfitting
+    if "week" not in dfx.columns:
+        return
+    d = dfx.copy()
+    d["favorite_is_home"] = d["favorite_is_home"].astype(int)
+    for col in ["neutralSite", "conferenceGame"]:
+        if col in d.columns:
+            d[col] = d[col].astype("Int64").fillna(0).astype(int)
+        else:
+            d[col] = 0
+
+    spread_bins = [0, 3, 7, 14, 30]
+    d["abs_spread_bucket"] = pd.cut(
+        d["abs_spread"],
+        bins=spread_bins,
+        right=False,
+        include_lowest=True,
+        labels=["[0,3)", "[3,7)", "[7,14)", "[14,30)"],
+    )
+    edge_bins = [-30, -12, -6, -3, -1, 0, 1, 3, 6, 12, 30]
+    d["fav_edge_bin"] = pd.cut(
+        d["fav_edge"], bins=edge_bins, right=False, include_lowest=True
+    )
+
+    # Interaction combo used as categorical
+    d["spread_edge_combo"] = (
+        d["abs_spread_bucket"].astype(str) + "×" + d["fav_edge_bin"].astype(str)
+    )
+
+    numeric_features = [
+        "elo_diff",
+        "fav_edge",
+        "abs_spread",
+        "week",
+        "favorite_is_home",
+        "neutralSite",
+        "conferenceGame",
+    ]
+    categorical_features = ["abs_spread_bucket", "fav_edge_bin", "spread_edge_combo"]
+    d_model = d.dropna(
+        subset=numeric_features + categorical_features + ["favorite_covered"]
+    ).copy()
+    y = d_model["favorite_covered"].astype(int)
+    train = d_model["week"] <= 10
+    test = d_model["week"] >= 11
+    if train.sum() == 0 or test.sum() == 0:
+        return
+
+    Cs = [1.0, 0.5, 0.2, 0.1, 0.05]
+    print("\n[LogReg+Bins Tuning] C values:", Cs)
+    rows = []
+    for C in Cs:
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ("num", StandardScaler(with_mean=False), numeric_features),
+                (
+                    "cat",
+                    OneHotEncoder(handle_unknown="ignore", sparse_output=True),
+                    categorical_features,
+                ),
+            ]
+        )
+        pipe = Pipeline(
+            [
+                ("prep", preprocessor),
+                ("logreg", LogisticRegression(max_iter=1000, solver="liblinear", C=C)),
+            ]
+        )
+        pipe.fit(d_model.loc[train, numeric_features + categorical_features], y[train])
+        proba_train = pipe.predict_proba(
+            d_model.loc[train, numeric_features + categorical_features]
+        )[:, 1]
+        proba_test = pipe.predict_proba(
+            d_model.loc[test, numeric_features + categorical_features]
+        )[:, 1]
+        auc_train = roc_auc_score(y[train], proba_train)
+        auc_test = roc_auc_score(y[test], proba_test)
+        brier_train = brier_score_loss(y[train], proba_train)
+        brier_test = brier_score_loss(y[test], proba_test)
+        rows.append(
+            {
+                "C": C,
+                "train_auc": auc_train,
+                "test_auc": auc_test,
+                "train_brier": brier_train,
+                "test_brier": brier_test,
+            }
+        )
+    tune_df = pd.DataFrame(rows)
+    print(
+        tune_df.to_string(
+            index=False,
+            formatters={
+                "train_auc": lambda v: f"{v:.3f}",
+                "test_auc": lambda v: f"{v:.3f}",
+                "train_brier": lambda v: f"{v:.3f}",
+                "test_brier": lambda v: f"{v:.3f}",
+            },
+        )
+    )
+
+
+def fit_logreg_nonlinear_with_importance(dfx: pd.DataFrame, C: float = 0.5):
+    # Fixed-C nonlinear model and permutation importances on test set
+    if "week" not in dfx.columns:
+        return
+    d = dfx.copy()
+    d["favorite_is_home"] = d["favorite_is_home"].astype(int)
+    for col in ["neutralSite", "conferenceGame"]:
+        if col in d.columns:
+            d[col] = d[col].astype("Int64").fillna(0).astype(int)
+        else:
+            d[col] = 0
+
+    spread_bins = [0, 3, 7, 14, 30]
+    d["abs_spread_bucket"] = pd.cut(
+        d["abs_spread"],
+        bins=spread_bins,
+        right=False,
+        include_lowest=True,
+        labels=["[0,3)", "[3,7)", "[7,14)", "[14,30)"],
+    )
+    edge_bins = [-30, -12, -6, -3, -1, 0, 1, 3, 6, 12, 30]
+    d["fav_edge_bin"] = pd.cut(
+        d["fav_edge"], bins=edge_bins, right=False, include_lowest=True
+    )
+    d["spread_edge_combo"] = (
+        d["abs_spread_bucket"].astype(str) + "×" + d["fav_edge_bin"].astype(str)
+    )
+
+    numeric_features = [
+        "elo_diff",
+        "fav_edge",
+        "abs_spread",
+        "week",
+        "favorite_is_home",
+        "neutralSite",
+        "conferenceGame",
+    ]
+    categorical_features = [
+        "abs_spread_bucket",
+        "fav_edge_bin",
+        "spread_edge_combo",
+    ]
+    d_model = d.dropna(
+        subset=numeric_features + categorical_features + ["favorite_covered"]
+    ).copy()
+    X = d_model[numeric_features + categorical_features]
+    y = d_model["favorite_covered"].astype(int)
+    train = d_model["week"] <= 10
+    test = d_model["week"] >= 11
+    if train.sum() == 0 or test.sum() == 0:
+        return
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", StandardScaler(with_mean=False), numeric_features),
+            (
+                "cat",
+                OneHotEncoder(handle_unknown="ignore", sparse_output=True),
+                categorical_features,
+            ),
+        ]
+    )
+    pipe = Pipeline(
+        [
+            ("prep", preprocessor),
+            ("logreg", LogisticRegression(max_iter=1000, solver="liblinear", C=C)),
+        ]
+    )
+    pipe.fit(X.loc[train], y[train])
+
+    proba_train = pipe.predict_proba(X.loc[train])[:, 1]
+    proba_test = pipe.predict_proba(X.loc[test])[:, 1]
+    auc_train = roc_auc_score(y[train], proba_train)
+    auc_test = roc_auc_score(y[test], proba_test)
+    brier_train = brier_score_loss(y[train], proba_train)
+    brier_test = brier_score_loss(y[test], proba_test)
+
+    print(
+        f"\n[LogReg+Bins C={C}] Train AUC: {auc_train:.3f} | Test AUC: {auc_test:.3f}"
+    )
+    print(
+        f"[LogReg+Bins C={C}] Train Brier: {brier_train:.3f} | Test Brier: {brier_test:.3f}"
+    )
+
+    # Permutation importance on test set (AUC-based)
+    result = permutation_importance(
+        pipe, X.loc[test], y[test], scoring="roc_auc", n_repeats=20, random_state=42
+    )
+    importances = result.importances_mean
+    features = list(X.columns)
+    imp_df = pd.DataFrame(
+        {"feature": features, "perm_auc_drop": importances}
+    ).sort_values("perm_auc_drop", ascending=False)
+    print(
+        "\n[LogReg+Bins C={}] Permutation importance (AUC drop on test, top 15):".format(
+            C
+        )
+    )
+    print(
+        imp_df.head(15).to_string(
+            index=False, formatters={"perm_auc_drop": lambda v: f"{v:.4f}"}
+        )
+    )
+
+
 if __name__ == "__main__":
     df = load_data(CSV_PATH)
     dfx = build_ats_target(df)
@@ -346,6 +657,9 @@ if __name__ == "__main__":
     )
 
     fit_logistic_regression(dfx)
+    fit_logistic_regression_nonlinear(dfx)
+    fit_logistic_regression_nonlinear_tuned(dfx)
+    fit_logreg_nonlinear_with_importance(dfx, C=0.5)
 
     # Optional quick sanity print
     # print(f"Rows after filtering: {len(dfx)}")
