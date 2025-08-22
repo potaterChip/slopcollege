@@ -53,14 +53,34 @@ def train_model_nonlinear(csv_path: str, C: float = 1.0) -> Pipeline:
         labels=["[0,3)", "[3,7)", "[7,14)", "[14,30)"],
     )
     edge_bins = [-30, -12, -6, -3, -1, 0, 1, 3, 6, 12, 30]
+    edge_labels = [
+        "[-30,-12)",
+        "[-12,-6)",
+        "[-6,-3)",
+        "[-3,-1)",
+        "[-1,0)",
+        "[0,1)",
+        "[1,3)",
+        "[3,6)",
+        "[6,12)",
+        "[12,30)",
+    ]
     d["fav_edge_bin"] = pd.cut(
-        d["fav_edge"], bins=edge_bins, right=False, include_lowest=True
+        d["fav_edge"],
+        bins=edge_bins,
+        right=False,
+        include_lowest=True,
+        labels=edge_labels,
     )
     d["neutralSite"] = d["neutralSite"].astype("Int64").fillna(0).astype(int)
     d["conferenceGame"] = d["conferenceGame"].astype("Int64").fillna(0).astype(int)
     d["spread_edge_combo"] = (
         d["abs_spread_bucket"].astype(str) + "×" + d["fav_edge_bin"].astype(str)
     )
+
+    # Ensure categorical columns contain no NaNs (OneHotEncoder categories must be clean)
+    for col in ["abs_spread_bucket", "fav_edge_bin", "spread_edge_combo"]:
+        d[col] = d[col].astype("object").fillna("missing")
 
     numeric_features = [
         "elo_diff",
@@ -106,8 +126,9 @@ def fetch_team_elo(
 ) -> float:
     # CFBD ratings Elo endpoint gives current ratings per week
     try:
-        ratings = elo_api.get_elo_ratings(year=season, week=week)  # type: ignore[attr-defined]
+        ratings = elo_api.get_elo(year=2024)
     except AttributeError:
+        print(f"Error: API method not available in this client version")
         # Fallback: API method not available in this client version
         return float("nan")
     for r in ratings:
@@ -151,7 +172,7 @@ def predict_cover_probability(
     fav_edge = elo_edge * mult
 
     spread_bins = [0, 3, 7, 14, 30]
-    abs_spread_bucket = pd.cut(
+    abs_spread_bucket_val = pd.cut(
         [abs_spread],
         bins=spread_bins,
         right=False,
@@ -159,9 +180,26 @@ def predict_cover_probability(
         labels=["[0,3)", "[3,7)", "[7,14)", "[14,30)"],
     )[0]
     edge_bins = [-30, -12, -6, -3, -1, 0, 1, 3, 6, 12, 30]
-    fav_edge_bin = pd.cut([fav_edge], bins=edge_bins, right=False, include_lowest=True)[
-        0
+    edge_labels = [
+        "[-30,-12)",
+        "[-12,-6)",
+        "[-6,-3)",
+        "[-3,-1)",
+        "[-1,0)",
+        "[0,1)",
+        "[1,3)",
+        "[3,6)",
+        "[6,12)",
+        "[12,30)",
     ]
+    fav_edge_bin_val = pd.cut(
+        [fav_edge], bins=edge_bins, right=False, include_lowest=True, labels=edge_labels
+    )[0]
+    # Coerce to strings and handle missing
+    abs_spread_bucket = (
+        str(abs_spread_bucket_val) if pd.notna(abs_spread_bucket_val) else "missing"
+    )
+    fav_edge_bin = str(fav_edge_bin_val) if pd.notna(fav_edge_bin_val) else "missing"
     spread_edge_combo = f"{abs_spread_bucket}×{fav_edge_bin}"
 
     row = pd.DataFrame(
