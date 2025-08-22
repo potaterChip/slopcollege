@@ -147,11 +147,9 @@ def add_favorite_aligned_edge(dfx: pd.DataFrame) -> pd.DataFrame:
     return dfx
 
 
-def summarize_cover_by_fav_edge_bins(
-    dfx: pd.DataFrame, min_n: int = 20
-) -> pd.DataFrame:
+def summarize_cover_by_fav_edge_bins(dfx: pd.DataFrame, min_n: int = 5) -> pd.DataFrame:
     dfx = dfx.copy()
-    bins = [-30, -15, -7, -3, -1, 0, 1, 3, 7, 15, 30]
+    bins = [-30, -12, -6, -3, -1, 0, 1, 3, 6, 12, 30]
     dfx["fav_edge_bin"] = pd.cut(
         dfx["fav_edge"], bins=bins, right=False, include_lowest=True
     )
@@ -159,6 +157,69 @@ def summarize_cover_by_fav_edge_bins(
     out = g.agg(n="size", covers="sum").reset_index()
     out["cover_rate"] = out["covers"] / out["n"]
     return out[out["n"] >= min_n]
+
+
+def summarize_cover_by_fav_edge_within_abs_spread(
+    dfx: pd.DataFrame, min_n: int = 5
+) -> pd.DataFrame:
+    dfx = dfx.copy()
+    # Define abs_spread buckets (match histogram bins roughly)
+    spread_bins = [0, 3, 7, 14, 30]
+    dfx["abs_spread_bucket"] = pd.cut(
+        dfx["abs_spread"],
+        bins=spread_bins,
+        right=False,
+        include_lowest=True,
+        labels=["[0,3)", "[3,7)", "[7,14)", "[14,30)"],
+    )
+    # Favorite-edge bins (reuse current bins)
+    edge_bins = [-30, -12, -6, -3, -1, 0, 1, 3, 6, 12, 30]
+    dfx["fav_edge_bin"] = pd.cut(
+        dfx["fav_edge"], bins=edge_bins, right=False, include_lowest=True
+    )
+
+    g = dfx.groupby(["abs_spread_bucket", "fav_edge_bin"], observed=True)[
+        "favorite_covered"
+    ]
+    out = g.agg(n="size", covers="sum").reset_index()
+    out["cover_rate"] = out["covers"] / out["n"]
+    # Filter small cells
+    out = out[out["n"] >= min_n]
+    # Sort for readability
+    return out.sort_values(["abs_spread_bucket", "fav_edge_bin"], ascending=True)
+
+
+def summarize_cover_by_fav_edge_within_abs_spread_coarse(
+    dfx: pd.DataFrame, min_n: int = 10
+) -> pd.DataFrame:
+    dfx = dfx.copy()
+    spread_bins = [0, 3, 7, 14, 30]
+    dfx["abs_spread_bucket"] = pd.cut(
+        dfx["abs_spread"],
+        bins=spread_bins,
+        right=False,
+        include_lowest=True,
+        labels=["[0,3)", "[3,7)", "[7,14)", "[14,30)"],
+    )
+
+    def edge_band(x: float) -> str:
+        try:
+            if x < -3:
+                return "neg(<-3)"
+            if x > 3:
+                return "pos(>3)"
+            return "near(±3)"
+        except Exception:
+            return "unknown"
+
+    dfx["fav_edge_coarse"] = dfx["fav_edge"].apply(edge_band)
+    g = dfx.groupby(["abs_spread_bucket", "fav_edge_coarse"], observed=True)[
+        "favorite_covered"
+    ]
+    out = g.agg(n="size", covers="sum").reset_index()
+    out["cover_rate"] = out["covers"] / out["n"]
+    out = out[out["n"] >= min_n]
+    return out.sort_values(["abs_spread_bucket", "fav_edge_coarse"], ascending=True)
 
 
 if __name__ == "__main__":
@@ -200,7 +261,23 @@ if __name__ == "__main__":
     print(summarize_cover_by_elo_edge_bins(dfx).to_string(index=False))
 
     print("\nCover rate by favorite-aligned ELO edge:")
-    print(summarize_cover_by_fav_edge_bins(dfx, min_n=20).to_string(index=False))
+    print(summarize_cover_by_fav_edge_bins(dfx, min_n=5).to_string(index=False))
+
+    print("\nCover rate by favorite-aligned ELO edge within |closing_spread| buckets:")
+    print(
+        summarize_cover_by_fav_edge_within_abs_spread(dfx, min_n=5).to_string(
+            index=False
+        )
+    )
+
+    print(
+        "\n[Coarse] Cover rate by favorite-aligned ELO edge within |closing_spread| buckets:"
+    )
+    print(
+        summarize_cover_by_fav_edge_within_abs_spread_coarse(dfx, min_n=10).to_string(
+            index=False
+        )
+    )
 
     # Optional quick sanity print
     # print(f"Rows after filtering: {len(dfx)}")
