@@ -30,16 +30,26 @@ def train_model_nonlinear(csv_path: str, C: float = 1.0) -> Pipeline:
         & df["ats_result"].isin(["home_cover", "away_cover"])
     )
     d = df.loc[mask_valid].copy()
+
     d["favorite_covered"] = (
         (d["favorite"] == "home") & (d["ats_result"] == "home_cover")
     ) | ((d["favorite"] == "away") & (d["ats_result"] == "away_cover"))
+
     d["abs_spread"] = d["closing_spread"].abs()
+
     d["favorite_is_home"] = (d["favorite"] == "home").astype(int)
+
     # ELO/edge features
-    d = d[d["homePregameElo"].notna() & d["awayPregameElo"].notna()].copy()
+    d = d[
+        d["homePregameElo"].notna() & d["awayPregameElo"].notna()
+    ].copy()  # another series filter like above
+
     d["elo_diff"] = d["homePregameElo"] - d["awayPregameElo"]
+
     d["market_home_margin_exp"] = -d["closing_spread"]
+
     d["elo_edge"] = d["elo_diff"] - d["market_home_margin_exp"]
+
     mult = d["favorite"].map({"home": 1, "away": -1})
     d["fav_edge"] = d["elo_edge"] * mult
 
