@@ -1,6 +1,10 @@
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score, brier_score_loss
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
 
 CSV_PATH = "data/cfbd_games_2024_with_closing.csv"
 
@@ -222,6 +226,68 @@ def summarize_cover_by_fav_edge_within_abs_spread_coarse(
     return out.sort_values(["abs_spread_bucket", "fav_edge_coarse"], ascending=True)
 
 
+def fit_logistic_regression(dfx: pd.DataFrame):
+    # Chronological split by week
+    if "week" not in dfx.columns:
+        print("\n[LogReg] week not in data; skipping model.")
+        return
+    d = dfx.copy()
+    # Feature matrix
+    d["favorite_is_home"] = d["favorite_is_home"].astype(int)
+    for col in ["neutralSite", "conferenceGame"]:
+        if col in d.columns:
+            d[col] = d[col].astype("Int64").fillna(0).astype(int)
+        else:
+            d[col] = 0
+    # Select features
+    feats = [
+        "abs_spread",
+        "favorite_is_home",
+        "neutralSite",
+        "conferenceGame",
+        "week",
+        "elo_diff",
+        "fav_edge",
+    ]
+    d_model = d.dropna(subset=feats + ["favorite_covered"]).copy()
+    X = d_model[feats]
+    y = d_model["favorite_covered"].astype(int)
+
+    train = d_model["week"] <= 10
+    test = d_model["week"] >= 11
+    if train.sum() == 0 or test.sum() == 0:
+        print("\n[LogReg] Not enough data for chronological split; skipping.")
+        return
+
+    pipe = Pipeline(
+        [
+            ("scaler", StandardScaler(with_mean=False)),
+            ("logreg", LogisticRegression(max_iter=1000, solver="liblinear")),
+        ]
+    )
+    pipe.fit(X[train], y[train])
+
+    # Metrics
+    proba_train = pipe.predict_proba(X[train])[:, 1]
+    proba_test = pipe.predict_proba(X[test])[:, 1]
+    auc_train = roc_auc_score(y[train], proba_train)
+    auc_test = roc_auc_score(y[test], proba_test)
+    brier_train = brier_score_loss(y[train], proba_train)
+    brier_test = brier_score_loss(y[test], proba_test)
+
+    print("\n[LogReg] Features:", feats)
+    print(f"[LogReg] Train AUC: {auc_train:.3f} | Test AUC: {auc_test:.3f}")
+    print(f"[LogReg] Train Brier: {brier_train:.3f} | Test Brier: {brier_test:.3f}")
+
+    # Coefficients
+    coef = pipe.named_steps["logreg"].coef_[0]
+    intercept = pipe.named_steps["logreg"].intercept_[0]
+    coef_table = pd.DataFrame({"feature": feats, "coef": coef}).sort_values("coef")
+    print("\n[LogReg] Intercept:", round(intercept, 4))
+    print("[LogReg] Coefficients:")
+    print(coef_table.to_string(index=False))
+
+
 if __name__ == "__main__":
     df = load_data(CSV_PATH)
     dfx = build_ats_target(df)
@@ -278,6 +344,8 @@ if __name__ == "__main__":
             index=False
         )
     )
+
+    fit_logistic_regression(dfx)
 
     # Optional quick sanity print
     # print(f"Rows after filtering: {len(dfx)}")
