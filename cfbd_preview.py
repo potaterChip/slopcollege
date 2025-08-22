@@ -190,6 +190,79 @@ if __name__ == "__main__":
     # Flatten closing lines and merge
     closing_df = flatten_closing_lines(lines_df)
     merged = games_df.merge(closing_df, on="id", how="left")
+
+    # Derived fields
+    def compute_derivatives(row):
+        home_pts = row.get("homePoints")
+        away_pts = row.get("awayPoints")
+        spread = row.get("closing_spread")
+        total = row.get("closing_total")
+
+        # Winner/margin
+        margin = None
+        winner = None
+        if pd.notna(home_pts) and pd.notna(away_pts):
+            margin = float(home_pts) - float(away_pts)
+            if margin > 0:
+                winner = "home"
+            elif margin < 0:
+                winner = "away"
+            else:
+                winner = "push"
+
+        # Favorite from spread (home perspective)
+        favorite = None
+        favorite_spread = None
+        if pd.notna(spread):
+            spread_f = float(spread)
+            if spread_f < 0:
+                favorite = "home"
+                favorite_spread = abs(spread_f)
+            elif spread_f > 0:
+                favorite = "away"
+                favorite_spread = spread_f
+            else:
+                favorite = "none"
+                favorite_spread = 0.0
+
+        # ATS grading (home perspective)
+        ats_result = None
+        if pd.notna(spread) and margin is not None:
+            # If (home_margin + spread) > 0, home covers; < 0, away covers; == 0 push
+            adj = margin + float(spread)
+            if adj > 0:
+                ats_result = "home_cover"
+            elif adj < 0:
+                ats_result = "away_cover"
+            else:
+                ats_result = "push"
+
+        # Total grading
+        total_result = None
+        game_total = None
+        if pd.notna(total) and pd.notna(home_pts) and pd.notna(away_pts):
+            game_total = float(home_pts) + float(away_pts)
+            if game_total > float(total):
+                total_result = "over"
+            elif game_total < float(total):
+                total_result = "under"
+            else:
+                total_result = "push"
+
+        return pd.Series(
+            {
+                "favorite": favorite,
+                "favorite_spread": favorite_spread,
+                "winner": winner,
+                "home_margin": margin,
+                "winner_margin": abs(margin) if margin is not None else None,
+                "ats_result": ats_result,
+                "game_total": game_total,
+                "total_result": total_result,
+            }
+        )
+
+    merged = pd.concat([merged, merged.apply(compute_derivatives, axis=1)], axis=1)
     merged_path = "data/cfbd_games_2024_with_closing.csv"
     merged.to_csv(merged_path, index=False)
 
@@ -206,6 +279,14 @@ if __name__ == "__main__":
                 "closing_spread",
                 "closing_total",
                 "line_provider",
+                "favorite",
+                "favorite_spread",
+                "winner",
+                "home_margin",
+                "winner_margin",
+                "ats_result",
+                "game_total",
+                "total_result",
             ]
         ].tail(10)
     )
