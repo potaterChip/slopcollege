@@ -1,4 +1,6 @@
 import os
+import json
+import ast
 import pandas as pd
 from dotenv import load_dotenv
 import cfbd
@@ -37,9 +39,26 @@ def flatten_closing_lines(lines_df: pd.DataFrame) -> pd.DataFrame:
 
     # Ensure list-like
     lines_df = lines_df.copy()
-    lines_df["lines"] = lines_df["lines"].apply(
-        lambda x: x if isinstance(x, list) else []
-    )
+
+    def _coerce_lines(value):
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            # Try Python literal first (CSV of repr), fallback to JSON
+            try:
+                parsed = ast.literal_eval(value)
+                if isinstance(parsed, list):
+                    return parsed
+            except Exception:
+                try:
+                    parsed = json.loads(value)
+                    if isinstance(parsed, list):
+                        return parsed
+                except Exception:
+                    return []
+        return [] if pd.isna(value) else []
+
+    lines_df["lines"] = lines_df["lines"].apply(_coerce_lines)
 
     exploded = lines_df[["id", "lines"]].explode("lines", ignore_index=True)
     exploded = exploded.dropna(subset=["lines"])  # keep only rows with a line dict
@@ -128,14 +147,45 @@ def flatten_closing_lines(lines_df: pd.DataFrame) -> pd.DataFrame:
 
 if __name__ == "__main__":
     os.makedirs("data", exist_ok=True)
-    with get_cfbd_client() as client:
-        games_df = fetch_games_2024(client)
-        lines_df = fetch_lines_2024(client)
 
     games_path = "data/cfbd_games_2024.csv"
     lines_path = "data/cfbd_lines_2024.csv"
-    games_df.to_csv(games_path, index=False)
-    lines_df.to_csv(lines_path, index=False)
+
+    games_df = None
+    lines_df = None
+
+    # Load from cache if present
+    if os.path.exists(games_path):
+        games_df = pd.read_csv(games_path)
+    if os.path.exists(lines_path):
+        lines_df = pd.read_csv(lines_path)
+        # Coerce cached stringified lists back to Python objects
+        if "lines" in lines_df.columns:
+
+            def _safe_eval(v):
+                if isinstance(v, list):
+                    return v
+                if isinstance(v, str):
+                    try:
+                        return ast.literal_eval(v)
+                    except Exception:
+                        try:
+                            return json.loads(v)
+                        except Exception:
+                            return []
+                return [] if pd.isna(v) else []
+
+            lines_df["lines"] = lines_df["lines"].apply(_safe_eval)
+
+    # Fetch only missing datasets
+    if games_df is None or lines_df is None:
+        with get_cfbd_client() as client:
+            if games_df is None:
+                games_df = fetch_games_2024(client)
+                games_df.to_csv(games_path, index=False)
+            if lines_df is None:
+                lines_df = fetch_lines_2024(client)
+                lines_df.to_csv(lines_path, index=False)
 
     # Flatten closing lines and merge
     closing_df = flatten_closing_lines(lines_df)
@@ -143,8 +193,8 @@ if __name__ == "__main__":
     merged_path = "data/cfbd_games_2024_with_closing.csv"
     merged.to_csv(merged_path, index=False)
 
-    print(f"Saved {len(games_df)} games -> {games_path}")
-    print(f"Saved {len(lines_df)} line records -> {lines_path}")
+    print(f"Cached {len(games_df)} games -> {games_path}")
+    print(f"Cached {len(lines_df)} line records -> {lines_path}")
     print(f"Saved merged with closing -> {merged_path}")
     print()
     print(
@@ -157,5 +207,5 @@ if __name__ == "__main__":
                 "closing_total",
                 "line_provider",
             ]
-        ].head(10)
+        ].tail(10)
     )
