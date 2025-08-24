@@ -9,4 +9,5 @@ __pycache__/
 
 # Data outputs
 data/
+!data/prediction_log.csv
 plots/
