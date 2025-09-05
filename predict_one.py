@@ -136,7 +136,7 @@ def fetch_team_elo(
 ) -> float:
     # CFBD ratings Elo endpoint gives current ratings per week
     try:
-        ratings = elo_api.get_elo(year=2024)
+        ratings = elo_api.get_elo(year=season)
     except AttributeError:
         print(f"Error: API method not available in this client version")
         # Fallback: API method not available in this client version
