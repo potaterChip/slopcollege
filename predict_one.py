@@ -2,6 +2,7 @@ import os
 import pandas as pd
 from dotenv import load_dotenv
 import cfbd
+from typing import Optional
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
@@ -21,7 +22,9 @@ def get_cfbd_client():
     return cfbd.ApiClient(cfg)
 
 
-def train_model_nonlinear(csv_path: str, C: float = 1.0) -> Pipeline:
+def train_model_nonlinear(
+    csv_path: str, C: float = 1.0, weights: Optional[pd.Series] = None
+) -> Pipeline:
     df = pd.read_csv(csv_path)
     # Build ATS target and features consistent with eda script
     mask_valid = (
@@ -127,7 +130,15 @@ def train_model_nonlinear(csv_path: str, C: float = 1.0) -> Pipeline:
             ("logreg", LogisticRegression(max_iter=1000, solver="liblinear", C=C)),
         ]
     )
-    pipe.fit(d_model[numeric_features + categorical_features], y)
+    fit_kwargs = {}
+    if weights is not None:
+        # align weights to d_model rows if provided at the df level
+        if len(weights) == len(df):
+            sample_w = weights.loc[d_model.index]
+        else:
+            sample_w = weights
+        fit_kwargs["logreg__sample_weight"] = sample_w.astype(float)
+    pipe.fit(d_model[numeric_features + categorical_features], y, **fit_kwargs)
     return pipe
 
 
@@ -156,9 +167,26 @@ def predict_cover_probability(
     season: int,
     week: int,
     C: float = 1.0,
+    use_recency_weights: bool = True,
 ) -> float:
-    # Train model on 2024 data
-    model = train_model_nonlinear("data/cfbd_games_2024_with_closing.csv", C=C)
+    # Train model on 2024 + 2025 with recency weights (default)
+    if use_recency_weights:
+        df24 = pd.read_csv("data/cfbd_games_2024_with_closing.csv")
+        df25 = pd.read_csv("data/cfbd_games_2025_with_closing.csv")
+        df = pd.concat([df24, df25], ignore_index=True)
+        # Simple season weighting: 2025=1.0, 2024=0.5
+        season_col = "season" if "season" in df.columns else None
+        if season_col is None:
+            # infer by source concat sizes
+            w = pd.Series([0.5] * len(df24) + [1.0] * len(df25))
+        else:
+            w = df["season"].apply(lambda s: 1.0 if int(s) >= 2025 else 0.5)
+        # Write temp combined csv to reuse existing training function path contract
+        tmp_path = "data/_cfbd_games_2024_2025_with_closing_tmp.csv"
+        df.to_csv(tmp_path, index=False)
+        model = train_model_nonlinear(tmp_path, C=C, weights=w)
+    else:
+        model = train_model_nonlinear("data/cfbd_games_2024_with_closing.csv", C=C)
 
     # Build one-row input using Elo for given season/week
     with get_cfbd_client() as client:

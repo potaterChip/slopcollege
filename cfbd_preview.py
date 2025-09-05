@@ -1,6 +1,7 @@
 import os
 import json
 import ast
+import argparse
 import pandas as pd
 from dotenv import load_dotenv
 import cfbd
@@ -19,15 +20,15 @@ def get_cfbd_client():
     return cfbd.ApiClient(cfg)
 
 
-def fetch_games_2024(api_client) -> pd.DataFrame:
+def fetch_games_year(api_client, year: int) -> pd.DataFrame:
     games_api = cfbd.GamesApi(api_client)
-    games = games_api.get_games(year=2024)
+    games = games_api.get_games(year=year)
     return pd.DataFrame([g.to_dict() for g in games])
 
 
-def fetch_lines_2024(api_client) -> pd.DataFrame:
+def fetch_lines_year(api_client, year: int) -> pd.DataFrame:
     betting_api = cfbd.BettingApi(api_client)
-    lines = betting_api.get_lines(year=2024)
+    lines = betting_api.get_lines(year=year)
     return pd.DataFrame([l.to_dict() for l in lines])
 
 
@@ -146,10 +147,22 @@ def flatten_closing_lines(lines_df: pd.DataFrame) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Fetch CFBD games and lines for a given year and cache merged CSV."
+    )
+    parser.add_argument("--year", type=int, default=2024, help="Season year to fetch")
+    parser.add_argument(
+        "--only-fbs",
+        action="store_true",
+        help="If set, keep only FBS vs FBS games (default includes FCS)",
+    )
+    args = parser.parse_args()
+
+    year = args.year
     os.makedirs("data", exist_ok=True)
 
-    games_path = "data/cfbd_games_2024.csv"
-    lines_path = "data/cfbd_lines_2024.csv"
+    games_path = f"data/cfbd_games_{year}.csv"
+    lines_path = f"data/cfbd_lines_{year}.csv"
 
     games_df = None
     lines_df = None
@@ -181,15 +194,18 @@ if __name__ == "__main__":
     if games_df is None or lines_df is None:
         with get_cfbd_client() as client:
             if games_df is None:
-                games_df = fetch_games_2024(client)
-                # Keep only FBS vs FBS games and overwrite the CSVs
-                fbs_mask = (games_df["homeClassification"].str.lower() == "fbs") & (
-                    games_df["awayClassification"].str.lower() == "fbs"
-                )
-                games_df = games_df.loc[fbs_mask].copy()
+                games_df = fetch_games_year(client, year)
+                # Optionally keep only FBS vs FBS; default include all (FCS included)
+                if args.only_fbs:
+                    fbs_mask = (
+                        games_df["homeClassification"].astype(str).str.lower() == "fbs"
+                    ) & (
+                        games_df["awayClassification"].astype(str).str.lower() == "fbs"
+                    )
+                    games_df = games_df.loc[fbs_mask].copy()
                 games_df.to_csv(games_path, index=False)
             if lines_df is None:
-                lines_df = fetch_lines_2024(client)
+                lines_df = fetch_lines_year(client, year)
                 # Filter lines to only the remaining game ids and overwrite
                 valid_ids = set(games_df["id"])
                 lines_df = lines_df[lines_df["id"].isin(valid_ids)].copy()
@@ -271,7 +287,9 @@ if __name__ == "__main__":
         )
 
     merged = pd.concat([merged, merged.apply(compute_derivatives, axis=1)], axis=1)
-    merged_path = "data/cfbd_games_2024_with_closing.csv"
+    if "season" not in merged.columns:
+        merged["season"] = year
+    merged_path = f"data/cfbd_games_{year}_with_closing.csv"
     merged.to_csv(merged_path, index=False)
 
     print(f"Cached {len(games_df)} games -> {games_path}")
